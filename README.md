@@ -1,3 +1,4 @@
+<!-- topics: fastapi,python,authentication,authorization,multi-tenant,jwt,rbac,api-keys,saas,sqlalchemy -->
 # Multi-tenant SaaS Auth
 
 Authentication, authorization and tenancy service for multi-tenant SaaS products, built with FastAPI and SQLAlchemy 2.
