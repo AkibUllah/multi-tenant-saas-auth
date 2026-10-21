@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +35,16 @@ class Settings(BaseSettings):
     email_backend: str = "console"
     email_from: str = "no-reply@example.com"
     frontend_base_url: str = "http://localhost:3000"
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalise_database_url(cls, value: str) -> str:
+        """Managed Postgres (Render, Heroku) hands out ``postgres://`` or ``postgresql://`` URLs;
+        SQLAlchemy needs the installed psycopg 3 driver spelled out."""
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+psycopg://" + value[len(prefix) :]
+        return value
 
     @property
     def is_production(self) -> bool:
