@@ -1,0 +1,42 @@
+# Render blueprint: API + managed PostgreSQL + Key Value (Redis-compatible) rate-limit store.
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: multi-tenant-saas-auth
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: EMAIL_BACKEND
+        value: console
+      - key: DATABASE_URL
+        fromDatabase:
+          name: saas-auth-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: saas-auth-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+
+  - type: keyvalue
+    name: saas-auth-redis
+    plan: free
+    ipAllowList: []
+
+databases:
+  - name: saas-auth-db
+    plan: free
+    databaseName: saas_auth
+    user: saas

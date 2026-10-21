@@ -8,6 +8,15 @@ Authentication, authorization and tenancy service for multi-tenant SaaS products
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+## Try it live
+
+| | |
+|---|---|
+| API reference | https://akibullah.github.io/multi-tenant-saas-auth/ — Swagger UI built from the exported OpenAPI document (static; no backend behind it) |
+| Run in your browser | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AkibUllah/multi-tenant-saas-auth?quickstart=1) — starts API + PostgreSQL + Redis with `docker compose` and seeds a demo account; open forwarded port 8000 at `/docs`, log in as `rahim@example.com` / `correct-horse-battery` (owner of "Dhaka Fintech Ltd") and paste the access token into "Authorize". |
+| One-click deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AkibUllah/multi-tenant-saas-auth) — `render.yaml` provisions the web service, a free PostgreSQL and a Key Value store for rate limiting; `JWT_SECRET` is generated. |
+| Local | `docker compose up` (see Quick Start) |
+
 ## Why this exists
 
 Every B2B product I have worked on, from merchant back-offices to cloud customer portals, ended up re-implementing the same auth core: users who belong to several organizations with different roles in each, refresh tokens that need revoking when a laptop is lost, API keys for integrations, and the nagging question "did we remember to filter this query by tenant?". This service packages those pieces into one well-tested codebase. Tenant scoping is enforced in a single dependency (`require(...)`), not sprinkled through handlers, and the demo `projects` resource proves the isolation end to end.
