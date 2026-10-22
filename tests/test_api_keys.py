@@ -110,3 +110,14 @@ def test_api_key_cannot_mint_keys_or_act_as_user(api, client, org):
     assert client.get("/v1/auth/me", headers=headers).status_code == 403
     r = client.get(f"/v1/orgs/{org['id']}", headers=headers)
     assert r.status_code == 200 and r.json()["role"] == "api_key"
+
+
+def test_generated_keys_always_round_trip_through_the_parser():
+    from saas_auth.security import generate_api_key, hash_token, parse_api_key
+
+    for _ in range(2000):
+        raw, prefix, secret_hash = generate_api_key()
+        parsed = parse_api_key(raw)
+        assert parsed is not None, raw
+        assert parsed[0] == prefix
+        assert hash_token(parsed[1]) == secret_hash

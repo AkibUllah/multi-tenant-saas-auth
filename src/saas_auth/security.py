@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -82,7 +83,9 @@ def decode_access_token(token: str, settings: Settings) -> dict[str, Any]:
 
 def generate_api_key() -> tuple[str, str, str]:
     """Return (raw_key, prefix, secret_hash). Only `raw_key` is ever shown to the caller."""
-    prefix = generate_token(6)[:8]
+    # The prefix is hex so it can never contain "_", the separator parse_api_key splits on.
+    # (token_urlsafe output may contain "_", which made roughly 1 in 8 keys unparseable.)
+    prefix = secrets.token_hex(4)
     secret = generate_token(32)
     raw = f"{API_KEY_PREFIX}_{prefix}_{secret}"
     return raw, prefix, hash_token(secret)
