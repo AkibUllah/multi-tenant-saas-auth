@@ -4,6 +4,8 @@
 Authentication, authorization and tenancy service for multi-tenant SaaS products, built with FastAPI and SQLAlchemy 2.
 
 [![CI](https://github.com/AkibUllah/multi-tenant-saas-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/AkibUllah/multi-tenant-saas-auth/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/AkibUllah/multi-tenant-saas-auth/actions/workflows/codeql.yml/badge.svg)](https://github.com/AkibUllah/multi-tenant-saas-auth/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/AkibUllah/multi-tenant-saas-auth)](https://github.com/AkibUllah/multi-tenant-saas-auth/releases)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -16,6 +18,16 @@ Authentication, authorization and tenancy service for multi-tenant SaaS products
 | Run in your browser | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AkibUllah/multi-tenant-saas-auth?quickstart=1) — starts API + PostgreSQL + Redis with `docker compose` and seeds a demo account; open forwarded port 8000 at `/docs`, log in as `rahim@example.com` / `correct-horse-battery` (owner of "Dhaka Fintech Ltd") and paste the access token into "Authorize". |
 | One-click deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AkibUllah/multi-tenant-saas-auth) — `render.yaml` provisions the web service, a free PostgreSQL and a Key Value store for rate limiting; `JWT_SECRET` is generated. |
 | Local | `docker compose up` (see Quick Start) |
+
+## Screenshots
+
+![Swagger UI API reference](docs/images/api-reference.png)
+
+Live API reference on GitHub Pages: auth, organizations, members, invitations, API keys and projects.
+
+![curl session against a local instance](docs/images/terminal-demo.png)
+
+A real curl session against a local instance: register, log in, create an organization (caller becomes owner), mint a read-only scoped API key, a 403 for a missing scope, and the lockout after repeated failed logins.
 
 ## Why this exists
 
@@ -166,7 +178,7 @@ src/saas_auth/
 ├── ratelimit.py      # RateLimiter + InMemory/Redis backends, route dependency
 ├── emailer.py        # console / memory email backends, Mailer
 └── routers/          # auth, orgs, members, invitations, api_keys, projects, health
-tests/                # 52 tests, SQLite in-memory, fakeredis
+tests/                # 58 tests, SQLite in-memory, fakeredis
 Dockerfile · docker-compose.yml · Makefile · .github/workflows/ci.yml
 ```
 
@@ -189,11 +201,11 @@ Tests run against an in-memory SQLite database and an in-memory email outbox, so
 
 ## Roadmap
 
-- Alembic migrations (tables are currently created with `create_all` at startup)
-- Optional TOTP second factor and WebAuthn passkeys
-- Audit log of security events (role changes, key creation, lockouts) with an export endpoint
-- OAuth2 / OIDC login (Google, GitHub) mapped onto the same user + membership model
-- Sliding-window rate limiting and per-organization quotas
+- [ ] Alembic migrations (tables are currently created with `create_all` at startup) (#1)
+- [ ] Optional TOTP second factor and WebAuthn passkeys (#2)
+- [ ] Audit log of security events (role changes, key creation, lockouts) with an export endpoint (#3)
+- [ ] OAuth2 / OIDC login (Google, GitHub) mapped onto the same user + membership model (#4)
+- [ ] Sliding-window rate limiting and per-organization quotas (#5)
 
 ## License
 
