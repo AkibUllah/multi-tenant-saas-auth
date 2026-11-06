@@ -6,7 +6,8 @@ from enum import Enum
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 
 from saas_auth import audit
 from saas_auth.audit import REDACTED, Action, Actor, scrub
@@ -156,3 +157,47 @@ def test_account_events_without_an_organization_are_stored_unscoped(db):
     user = add_user(db, "loner@acme.com")
     written = audit.record_for_user(db, user.id, Actor.system(), Action.USER_LOCKED, ("user", "u"))
     assert [e.org_id for e in written] == [None]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE audit_events SET action = 'tampered'",
+        "UPDATE audit_events SET org_id = NULL",
+        "DELETE FROM audit_events",
+    ],
+)
+def test_database_refuses_to_change_or_remove_events(app, db, statement):
+    org = add_org(db, "acme")
+    audit.record_for_org(db, org.id, Actor.system(), Action.ORG_DELETED, ("org", org.id))
+    db.commit()
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.execute(text(statement))
+    db.rollback()
+
+    assert events(db)[0].action == "org.deleted"
+
+
+def test_orm_changes_to_a_stored_event_are_refused(db):
+    org = add_org(db, "acme")
+    event = audit.record_for_org(db, org.id, Actor.system(), Action.ORG_DELETED, ("org", org.id))
+    db.commit()
+
+    event.details = {"rewritten": True}
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.commit()
+    db.rollback()
+
+    db.delete(event)
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.commit()
+    db.rollback()
+
+
+def test_postgres_also_refuses_truncate(app, db):
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("TRUNCATE only exists on PostgreSQL")
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.execute(text("TRUNCATE audit_events"))
+    db.rollback()

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
 from saas_auth.config import Settings
+from saas_auth.database import Base, make_engine
 from saas_auth.main import create_app
+
+# Point this at a throwaway PostgreSQL database to run the suite there; its tables are dropped.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
 
 def make_settings(**overrides) -> Settings:
@@ -33,8 +38,14 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def app(settings: Settings):
-    return create_app(settings)
+def app(settings: Settings) -> Iterator:
+    if TEST_DATABASE_URL is None:
+        yield create_app(settings)
+        return
+    engine = make_engine(TEST_DATABASE_URL)
+    Base.metadata.drop_all(engine)
+    yield create_app(settings, engine=engine)
+    engine.dispose()
 
 
 @pytest.fixture
