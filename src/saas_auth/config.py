@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +31,9 @@ class Settings(BaseSettings):
 
     rate_limit_auth_requests: int = 20
     rate_limit_auth_window_seconds: int = 60
+
+    # Reverse proxies in front of the app that append to X-Forwarded-For. 0 ignores the header.
+    trusted_proxy_hops: int = Field(default=0, ge=0)
 
     email_backend: str = "console"
     email_from: str = "no-reply@example.com"

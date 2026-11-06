@@ -6,6 +6,7 @@ A clock is injectable so tests can move time without sleeping.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import threading
 import time
@@ -120,6 +121,26 @@ def client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def trusted_client_ip(request: Request) -> str | None:
+    """The caller's address, believing X-Forwarded-For only as far as our own proxies vouch for it.
+
+    Each trusted proxy appends the peer it saw, so the entry `trusted_proxy_hops` from the right
+    is the last one written by infrastructure we control; anything further left is whatever the
+    client sent. Use this wherever the address is evidence rather than a throttling key.
+    """
+    peer = request.client.host if request.client else None
+    hops = request.app.state.settings.trusted_proxy_hops
+    forwarded = request.headers.get("x-forwarded-for")
+    if hops and forwarded:
+        entries = [entry.strip() for entry in forwarded.split(",")]
+        if len(entries) >= hops:
+            try:
+                return str(ipaddress.ip_address(entries[-hops]))
+            except ValueError:
+                log.warning("ignoring malformed X-Forwarded-For entry")
+    return peer
 
 
 def rate_limit(scope: str, limit: int | None = None, window_seconds: int | None = None):

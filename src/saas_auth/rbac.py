@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .models import ApiKey, Membership, Organization, User
+from .ratelimit import trusted_client_ip
 from .security import Principal, get_principal
 from .utils import utcnow
 
@@ -86,6 +87,7 @@ class TenantContext:
     principal: Principal
     permissions: frozenset[str]
     role: str | None = None
+    ip: str | None = None
     extra: dict = field(default_factory=dict)
 
     @property
@@ -98,6 +100,7 @@ class TenantContext:
 
     @property
     def actor_id(self) -> str | None:
+        """The acting user, for columns that reference users; None for API keys."""
         if self.principal.user is not None:
             return self.principal.user.id
         return None
@@ -132,7 +135,12 @@ def resolve_tenant(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Organization not found")
         key.last_used_at = utcnow()
         db.commit()
-        return TenantContext(org=org, principal=principal, permissions=frozenset(key.scopes))
+        return TenantContext(
+            org=org,
+            principal=principal,
+            permissions=frozenset(key.scopes),
+            ip=trusted_client_ip(request),
+        )
 
     assert principal.user is not None
     membership = get_membership(db, principal.user.id, org.id)
@@ -143,6 +151,7 @@ def resolve_tenant(
         principal=principal,
         permissions=permissions_for(membership.role),
         role=membership.role,
+        ip=trusted_client_ip(request),
     )
 
 
