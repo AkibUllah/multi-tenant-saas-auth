@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import audit
+from ..audit import Action
 from ..database import get_db
 from ..models import Membership, Organization, User
 from ..rbac import Role, TenantContext, require
@@ -91,6 +93,9 @@ def update_org(
 def delete_org(
     ctx: TenantContext = Depends(require("org:delete")), db: Session = Depends(get_db)
 ) -> MessageOut:
+    audit.record(
+        db, ctx, Action.ORG_DELETED, ("org", ctx.org.id), name=ctx.org.name, slug=ctx.org.slug
+    )
     db.delete(ctx.org)
     db.commit()
     return MessageOut(message="Organization deleted")
