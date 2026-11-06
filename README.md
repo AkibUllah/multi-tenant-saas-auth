@@ -44,6 +44,7 @@ Every B2B product I have worked on, from merchant back-offices to cloud customer
 - Invitations by email with accept tokens; last-owner protection, owner-only ownership transfer
 - Fixed-window rate limiting on auth endpoints with Redis backend when `REDIS_URL` is set and an in-process fallback otherwise
 - Non-member requests to an organization return 404, so organization ids cannot be enumerated
+- Append-only audit log of security events, written in the same transaction as the change and readable per organization through a filtered, paginated API and a CSV export
 - `/health` endpoint, request ids and timing logs, environment-driven configuration
 
 ## Architecture
@@ -54,7 +55,7 @@ flowchart LR
     API --> Principal[get_principal\nJWT or API key]
     Principal --> Tenant[resolve_tenant\norg_id from path\nmembership or key scopes]
     Tenant --> Require[require perms...]
-    Require --> Handlers[Routers\nauth · orgs · members\ninvitations · api-keys · projects]
+    Require --> Handlers[Routers\nauth · orgs · members · audit\ninvitations · api-keys · projects]
     Handlers --> DB[(PostgreSQL / SQLite)]
     API --> RL[Rate limiter]
     RL --> Redis[(Redis\noptional)]
@@ -67,6 +68,7 @@ Key decisions:
 - **Refresh token families.** Each login opens a family; each refresh revokes the presented token and issues a child in the same family. A replayed token is treated as theft and the entire family is revoked, which logs out the attacker and the victim's stolen session without touching other devices.
 - **Permissions as strings.** Roles map to permission sets; API key scopes use the same strings. That keeps `require("projects:create")` identical for human and machine callers, and a key can never carry more than its creator held.
 - **No native-enum or timezone surprises.** Roles are stored as plain strings and a `UTCDateTime` type decorator keeps datetimes timezone-aware on SQLite and Postgres alike, so tests run on SQLite with no behavioural drift.
+- **Audit events share the transaction of the change.** `audit.record(db, ctx, action, target, **meta)` only adds a row to the session, so a rolled back action leaves no event and a committed one cannot lose its event. See [Audit log](#audit-log).
 - **Swappable infrastructure.** Rate limiting and email sit behind small protocols; tests use the in-memory implementations, production uses Redis and a real mail provider.
 
 ## Tech Stack
@@ -150,6 +152,8 @@ The verification email (and later invitation / reset emails) are printed to the 
 | DELETE | `/v1/orgs/{org_id}/api-keys/{key_id}` | `api_keys:revoke` | Revoke key |
 | POST / GET | `/v1/orgs/{org_id}/projects` | `projects:create` / `projects:read` | Tenant-scoped demo resource |
 | GET / PATCH / DELETE | `/v1/orgs/{org_id}/projects/{id}` | `projects:read` / `projects:update` / `projects:delete` | Project detail |
+| GET | `/v1/orgs/{org_id}/audit-events` | `audit:read` | List audit events, newest first. Query: `action`, `actor_id`, `since`, `until`, `cursor`, `limit` (1-200, default 50) |
+| GET | `/v1/orgs/{org_id}/audit-events/export.csv` | `audit:read` | Stream matching events as CSV. Query: `action`, `actor_id`, `since`, `until` |
 
 Authentication is either `Authorization: Bearer <access_token>` or `X-API-Key: sk_...`. API keys are bound to one organization and to the scopes granted at creation.
 
@@ -159,8 +163,29 @@ Authentication is either `Authorization: Bearer <access_token>` or `X-API-Key: s
 | --- | :-: | :-: | :-: | :-: |
 | `org:read`, `members:read`, `projects:read` | ✓ | ✓ | ✓ | ✓ |
 | `projects:create`, `projects:update` | | ✓ | ✓ | ✓ |
-| `org:update`, `members:invite`, `members:update`, `members:remove`, `projects:delete`, `api_keys:*` | | | ✓ | ✓ |
+| `org:update`, `members:invite`, `members:update`, `members:remove`, `projects:delete`, `api_keys:*`, `audit:read` | | | ✓ | ✓ |
 | `org:delete`, `billing:manage` | | | | ✓ |
+
+### Audit log
+
+| Action | Target | Metadata |
+| --- | --- | --- |
+| `member.role_changed` | user | `from_role`, `to_role` |
+| `member.removed`, `member.left` | user | `role` |
+| `invitation.created`, `invitation.revoked`, `invitation.accepted` | invitation | `email`, `role` |
+| `api_key.created` | api_key | `name`, `prefix`, `scopes` |
+| `api_key.revoked` | api_key | `name`, `prefix` |
+| `user.locked` | user | `lockout_seconds` |
+| `org.deleted` | org | `name`, `slug` |
+| `audit.exported` | org | the filters used |
+
+Every event also carries `actor_kind` (`user`, `api_key` or `system`), `actor_id`, `ip` and `created_at`. Pages return `{"items": [...], "next_cursor": "..."}`; pass `next_cursor` back as `cursor` until it is null. `since` is inclusive, `until` is exclusive, and a date without an offset means UTC.
+
+- **Organization-scoped.** Every read filters on the organization in the path. A lockout has no tenant in the request, so it is written once for each organization the user belongs to, and no row names another organization. A lockout of a user with no organization is stored with a NULL `org_id` and is not served by any endpoint.
+- **Append-only.** There is no write route, and database triggers refuse `UPDATE` and `DELETE` (and `TRUNCATE` on PostgreSQL), including from raw SQL. `org_id` and `actor_id` are not foreign keys, so events outlive a deleted organization. There is no retention job: removing old events means deliberately dropping the triggers first. A database superuser can do that too, so ship the log elsewhere if you need protection from your own database administrators.
+- **No secrets.** Call sites pass only public fields. As a backstop, metadata keys that look like a password, token, secret, hash or key are redacted, as are values shaped like an API key, JWT or bcrypt hash.
+- **Trustworthy addresses.** `ip` is the connection peer unless `TRUSTED_PROXY_HOPS` says how many proxies you run, in which case it is the entry they vouch for in `X-Forwarded-For`. Set it to match your deployment, or you will record the proxy's address. The rate limiter still keys on the first `X-Forwarded-For` entry.
+- **Safe to open.** CSV cells that a spreadsheet would evaluate as a formula are prefixed with `'`.
 
 ## Project Structure
 
@@ -170,15 +195,16 @@ src/saas_auth/
 ├── main.py           # create_app() factory, middleware, router wiring
 ├── config.py         # Settings (env / .env)
 ├── database.py       # engine/session helpers, UTCDateTime
-├── models.py         # User, Organization, Membership, RefreshToken, EmailToken, ApiKey, Invitation, Project
+├── models.py         # User, Organization, Membership, RefreshToken, EmailToken, ApiKey, Invitation, Project, AuditEvent
 ├── schemas.py        # Pydantic request/response models
 ├── security.py       # bcrypt, JWT, API key parsing, Principal resolution
 ├── tokens.py         # refresh token rotation + reuse detection, email tokens
 ├── rbac.py           # roles, permission map, resolve_tenant, require()
 ├── ratelimit.py      # RateLimiter + InMemory/Redis backends, route dependency
 ├── emailer.py        # console / memory email backends, Mailer
-└── routers/          # auth, orgs, members, invitations, api_keys, projects, health
-tests/                # 58 tests, SQLite in-memory, fakeredis
+├── audit.py          # audit.record, metadata scrubbing, event queries, CSV export
+└── routers/          # auth, orgs, members, invitations, api_keys, projects, audit, health
+tests/                # 168 tests, SQLite in-memory or PostgreSQL, fakeredis
 Dockerfile · docker-compose.yml · Makefile · .github/workflows/ci.yml
 ```
 
@@ -189,7 +215,7 @@ make test          # or: pytest
 make lint
 ```
 
-Tests run against an in-memory SQLite database and an in-memory email outbox, so no services are required. Coverage includes:
+Tests run against an in-memory SQLite database and an in-memory email outbox, so no services are required. To run them on PostgreSQL, as CI also does, point `TEST_DATABASE_URL` at a throwaway database (its tables are dropped) and install the `postgres` extra. Coverage includes:
 
 - refresh token rotation, reuse detection (family revocation), expiry, logout / logout-all
 - role → permission nesting, `require()` enforcement, last-owner protection, owner-only role grants
@@ -198,12 +224,12 @@ Tests run against an in-memory SQLite database and an in-memory email outbox, so
 - rate limiting with an injectable clock on both backends (fakeredis for Redis), 429 headers, login lockout and counter reset
 - invitation lifecycle: email delivery, email mismatch, duplicates, revocation, expiry
 - registration, login, email verification, password reset / change
+- audit log: every recorded action, atomicity with the change, tenant isolation, trigger-enforced immutability, pagination, filters, CSV formula safety, and a sweep proving no secret reaches stored rows or responses
 
 ## Roadmap
 
 - [ ] Alembic migrations (tables are currently created with `create_all` at startup) (#1)
 - [ ] Optional TOTP second factor and WebAuthn passkeys (#2)
-- [ ] Audit log of security events (role changes, key creation, lockouts) with an export endpoint (#3)
 - [ ] OAuth2 / OIDC login (Google, GitHub) mapped onto the same user + membership model (#4)
 - [ ] Sliding-window rate limiting and per-organization quotas (#5)
 
