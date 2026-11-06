@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    DDL,
     JSON,
     Boolean,
     ForeignKey,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -178,3 +180,40 @@ class AuditEvent(Base):
     details: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)
     ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+# Append-only is enforced by the database, so it also holds for raw SQL and bulk statements that
+# never pass through the ORM. create_all runs these once, when it creates the table.
+_AUDIT_IMMUTABLE_DDL = {
+    "sqlite": [
+        """
+        CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events
+        BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END
+        """,
+        """
+        CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events
+        BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END
+        """,
+    ],
+    "postgresql": [
+        """
+        CREATE OR REPLACE FUNCTION audit_events_immutable() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'audit_events is append-only'; END;
+        $$ LANGUAGE plpgsql
+        """,
+        """
+        CREATE TRIGGER audit_events_no_change BEFORE UPDATE OR DELETE ON audit_events
+        FOR EACH ROW EXECUTE FUNCTION audit_events_immutable()
+        """,
+        """
+        CREATE TRIGGER audit_events_no_truncate BEFORE TRUNCATE ON audit_events
+        FOR EACH STATEMENT EXECUTE FUNCTION audit_events_immutable()
+        """,
+    ],
+}
+
+for _dialect, _statements in _AUDIT_IMMUTABLE_DDL.items():
+    for _statement in _statements:
+        event.listen(
+            AuditEvent.__table__, "after_create", DDL(_statement).execute_if(dialect=_dialect)
+        )
