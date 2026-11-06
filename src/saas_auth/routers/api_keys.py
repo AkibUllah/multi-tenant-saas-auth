@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import audit
+from ..audit import Action
 from ..database import get_db
 from ..models import ApiKey
 from ..rbac import TenantContext, require
@@ -39,6 +41,16 @@ def create_api_key(
         created_by=ctx.user.id,
     )
     db.add(key)
+    db.flush()
+    audit.record(
+        db,
+        ctx,
+        Action.API_KEY_CREATED,
+        ("api_key", key.id),
+        name=key.name,
+        prefix=key.prefix,
+        scopes=key.scopes,
+    )
     db.commit()
     return ApiKeyCreated(
         id=key.id,
@@ -75,5 +87,8 @@ def revoke_api_key(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "API key not found")
     if key.revoked_at is None:
         key.revoked_at = utcnow()
+        audit.record(
+            db, ctx, Action.API_KEY_REVOKED, ("api_key", key.id), name=key.name, prefix=key.prefix
+        )
         db.commit()
     return MessageOut(message="API key revoked")

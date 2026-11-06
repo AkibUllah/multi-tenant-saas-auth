@@ -4,9 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import audit
+from ..audit import Action, Actor
 from ..database import get_db
 from ..emailer import Mailer
 from ..models import Invitation, Membership, Organization, User
+from ..ratelimit import trusted_client_ip
 from ..rbac import Role, TenantContext, get_membership, require
 from ..schemas import (
     AcceptInvitationOut,
@@ -16,7 +19,7 @@ from ..schemas import (
     OrgOut,
     TokenIn,
 )
-from ..security import get_current_user
+from ..security import Principal, get_current_user
 from ..utils import generate_token, hash_token, in_seconds, is_expired, utcnow
 
 router = APIRouter(tags=["invitations"])
@@ -64,6 +67,15 @@ def create_invitation(
         expires_at=in_seconds(settings.invitation_ttl_seconds),
     )
     db.add(invitation)
+    db.flush()
+    audit.record(
+        db,
+        ctx,
+        Action.INVITATION_CREATED,
+        ("invitation", invitation.id),
+        email=email,
+        role=invitation.role,
+    )
     db.commit()
     Mailer(request.app.state.email, settings).send_invitation(
         email, ctx.org.name, invitation.role, raw
@@ -97,14 +109,26 @@ def revoke_invitation(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found")
     if invitation.accepted_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Invitation already accepted")
-    invitation.revoked_at = utcnow()
-    db.commit()
+    if invitation.revoked_at is None:
+        invitation.revoked_at = utcnow()
+        audit.record(
+            db,
+            ctx,
+            Action.INVITATION_REVOKED,
+            ("invitation", invitation.id),
+            email=invitation.email,
+            role=invitation.role,
+        )
+        db.commit()
     return MessageOut(message="Invitation revoked")
 
 
 @router.post("/v1/invitations/accept", response_model=AcceptInvitationOut)
 def accept_invitation(
-    payload: TokenIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    payload: TokenIn,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> AcceptInvitationOut:
     invitation = db.scalar(
         select(Invitation).where(Invitation.token_hash == hash_token(payload.token))
@@ -125,6 +149,15 @@ def accept_invitation(
 
     db.add(Membership(user_id=user.id, org_id=invitation.org_id, role=invitation.role))
     invitation.accepted_at = utcnow()
+    audit.record_for_org(
+        db,
+        invitation.org_id,
+        Actor.of(Principal(user=user), trusted_client_ip(request)),
+        Action.INVITATION_ACCEPTED,
+        ("invitation", invitation.id),
+        email=invitation.email,
+        role=invitation.role,
+    )
     db.commit()
     org = db.get(Organization, invitation.org_id)
     assert org is not None
