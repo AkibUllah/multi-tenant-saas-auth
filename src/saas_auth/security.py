@@ -125,6 +125,12 @@ class Principal:
     def kind(self) -> str:
         return "user" if self.user is not None else "api_key"
 
+    @property
+    def id(self) -> str | None:
+        """The acting user's id, or the key's own id when an API key is calling."""
+        actor = self.user if self.user is not None else self.api_key
+        return actor.id if actor is not None else None
+
 
 def get_principal(
     request: Request,
