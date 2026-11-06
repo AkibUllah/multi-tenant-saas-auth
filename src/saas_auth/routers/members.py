@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import audit
+from ..audit import Action
 from ..database import get_db
 from ..models import Membership, User
 from ..rbac import Role, TenantContext, require
@@ -72,6 +74,15 @@ def update_member_role(
             status.HTTP_409_CONFLICT, "An organization must keep at least one owner"
         )
 
+    if membership.role != new_role:
+        audit.record(
+            db,
+            ctx,
+            Action.MEMBER_ROLE_CHANGED,
+            ("user", user_id),
+            from_role=membership.role,
+            to_role=new_role,
+        )
     membership.role = new_role
     db.commit()
     user = db.get(User, user_id)
@@ -99,6 +110,7 @@ def remove_member(
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "An organization must keep at least one owner"
             )
+    audit.record(db, ctx, Action.MEMBER_REMOVED, ("user", user_id), role=membership.role)
     db.delete(membership)
     db.commit()
     return MessageOut(message="Member removed")
@@ -115,6 +127,7 @@ def leave_org(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Transfer ownership before leaving the organization"
         )
+    audit.record(db, ctx, Action.MEMBER_LEFT, ("user", ctx.user.id), role=membership.role)
     db.delete(membership)
     db.commit()
     return MessageOut(message="You left the organization")
