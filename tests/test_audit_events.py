@@ -126,3 +126,86 @@ def test_failed_commit_leaves_no_event(app, api, client, team, monkeypatch):
 
     assert r.status_code == 500
     assert stored_events(app, org_id, "member.removed") == []
+
+
+def create_key(api, client, tokens, org_id, name="ci", scopes=("members:remove",)) -> dict:
+    r = client.post(
+        f"/v1/orgs/{org_id}/api-keys",
+        json={"name": name, "scopes": list(scopes)},
+        headers=api.auth(tokens),
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_api_key_creation_is_recorded_without_the_secret(app, api, client, team):
+    org_id = team["org"]["id"]
+    key = create_key(api, client, team["owner"], org_id)
+
+    [event] = stored_events(app, org_id, "api_key.created")
+    assert (event.target_type, event.target_id) == ("api_key", key["id"])
+    assert event.details == {"name": "ci", "prefix": key["prefix"], "scopes": ["members:remove"]}
+
+
+def test_api_key_revocation_is_recorded_once(app, api, client, team):
+    org_id = team["org"]["id"]
+    key = create_key(api, client, team["owner"], org_id)
+    url = f"/v1/orgs/{org_id}/api-keys/{key['id']}"
+
+    assert client.delete(url, headers=api.auth(team["owner"])).status_code == 200
+    assert client.delete(url, headers=api.auth(team["owner"])).status_code == 200
+
+    [event] = stored_events(app, org_id, "api_key.revoked")
+    assert event.target_id == key["id"]
+
+
+def test_action_taken_with_an_api_key_is_attributed_to_that_key(app, api, client, team):
+    org_id = team["org"]["id"]
+    key = create_key(api, client, team["owner"], org_id)
+
+    r = client.delete(
+        f"/v1/orgs/{org_id}/members/{team['viewer_id']}", headers={"X-API-Key": key["key"]}
+    )
+    assert r.status_code == 200
+
+    [event] = stored_events(app, org_id, "member.removed")
+    assert (event.actor_kind, event.actor_id) == ("api_key", key["id"])
+
+
+def invite(api, client, tokens, org_id, email="new@acme.com", role="member") -> dict:
+    r = client.post(
+        f"/v1/orgs/{org_id}/invitations",
+        json={"email": email, "role": role},
+        headers=api.auth(tokens),
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_invitation_creation_is_recorded(app, api, client, team):
+    org_id = team["org"]["id"]
+    invitation = invite(api, client, team["owner"], org_id)
+
+    event = stored_events(app, org_id, "invitation.created")[-1]
+    assert (event.target_type, event.target_id) == ("invitation", invitation["id"])
+    assert event.details == {"email": "new@acme.com", "role": "member"}
+
+
+def test_invitation_revocation_is_recorded_once(app, api, client, team):
+    org_id = team["org"]["id"]
+    invitation = invite(api, client, team["owner"], org_id)
+    url = f"/v1/orgs/{org_id}/invitations/{invitation['id']}"
+
+    assert client.delete(url, headers=api.auth(team["owner"])).status_code == 200
+    assert client.delete(url, headers=api.auth(team["owner"])).status_code == 200
+
+    [event] = stored_events(app, org_id, "invitation.revoked")
+    assert event.target_id == invitation["id"]
+
+
+def test_invitation_acceptance_is_recorded_against_the_invitee(app, api, team):
+    org_id = team["org"]["id"]
+    [event] = stored_events(app, org_id, "invitation.accepted")
+    assert org_id == event.org_id
+    assert (event.actor_kind, event.actor_id) == ("user", team["viewer_id"])
+    assert event.details == {"email": "viewer@acme.com", "role": "viewer"}
