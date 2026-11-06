@@ -6,10 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import audit
+from ..audit import Action, Actor
 from ..database import get_db
 from ..emailer import Mailer
 from ..models import User
-from ..ratelimit import rate_limit
+from ..ratelimit import rate_limit, trusted_client_ip
 from ..schemas import (
     ChangePasswordIn,
     EmailIn,
@@ -108,6 +110,14 @@ def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)) -> 
         if user.failed_login_attempts >= settings.login_max_attempts:
             user.locked_until = in_seconds(settings.login_lockout_seconds)
             user.failed_login_attempts = 0
+            audit.record_for_user(
+                db,
+                user.id,
+                Actor.system(trusted_client_ip(request)),
+                Action.USER_LOCKED,
+                ("user", user.id),
+                lockout_seconds=settings.login_lockout_seconds,
+            )
             log.warning("account locked user=%s", user.id)
         db.commit()
         raise invalid

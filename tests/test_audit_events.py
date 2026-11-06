@@ -209,3 +209,57 @@ def test_invitation_acceptance_is_recorded_against_the_invitee(app, api, team):
     assert org_id == event.org_id
     assert (event.actor_kind, event.actor_id) == ("user", team["viewer_id"])
     assert event.details == {"email": "viewer@acme.com", "role": "viewer"}
+
+
+def lock_out(client, settings, email: str) -> None:
+    body = {"email": email, "password": "wrong-password"}
+    for _ in range(settings.login_max_attempts):
+        assert client.post("/v1/auth/login", json=body).status_code == 401
+
+
+def test_lockout_reaches_every_organization_of_the_user(app, api, client, settings, team):
+    other_owner = api.signup("other@globex.com")
+    other_org = api.create_org(other_owner, "Globex")
+    r = client.post(
+        f"/v1/orgs/{other_org['id']}/invitations",
+        json={"email": "viewer@acme.com", "role": "viewer"},
+        headers=api.auth(other_owner),
+    )
+    assert r.status_code == 201
+    token = app.state.email.last_for("viewer@acme.com").context["token"]
+    r = client.post(
+        "/v1/invitations/accept", json={"token": token}, headers=api.auth(team["viewer"])
+    )
+    assert r.status_code == 200
+
+    lock_out(client, settings, "viewer@acme.com")
+
+    events = stored_events(app, action="user.locked")
+    assert {e.org_id for e in events} == {team["org"]["id"], other_org["id"]}
+    for event in events:
+        assert (event.actor_kind, event.actor_id) == ("system", None)
+        assert (event.target_type, event.target_id) == ("user", team["viewer_id"])
+        assert event.details == {"lockout_seconds": settings.login_lockout_seconds}
+
+
+def test_lockout_of_a_user_without_organizations_stays_unscoped(app, api, client, settings):
+    api.register("solo@example.com")
+    lock_out(client, settings, "solo@example.com")
+    assert [e.org_id for e in stored_events(app, action="user.locked")] == [None]
+
+
+def test_failed_logins_below_the_threshold_record_nothing(app, api, client, team):
+    r = client.post(
+        "/v1/auth/login", json={"email": "viewer@acme.com", "password": "wrong-password"}
+    )
+    assert r.status_code == 401
+    assert stored_events(app, action="user.locked") == []
+
+
+def test_org_deletion_is_recorded_and_the_log_outlives_the_org(app, api, client, team):
+    org_id = team["org"]["id"]
+    assert client.delete(f"/v1/orgs/{org_id}", headers=api.auth(team["owner"])).status_code == 200
+
+    [event] = stored_events(app, org_id, "org.deleted")
+    assert event.details == {"name": "Acme Ltd", "slug": "acme-ltd"}
+    assert stored_events(app, org_id, "invitation.accepted")
