@@ -11,17 +11,20 @@ from __future__ import annotations
 
 import base64
 import binascii
+import csv
+import io
+import json
 import logging
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from .models import AuditEvent, Membership
 from .security import Principal
@@ -226,3 +229,62 @@ def list_events(
     rows = list(db.scalars(query))
     page = rows[:limit]
     return page, encode_cursor(page[-1]) if len(rows) > limit else None
+
+
+# --------------------------------------------------------------------------- export
+
+EXPORT_BATCH_SIZE = 500
+CSV_COLUMNS = (
+    "created_at",
+    "id",
+    "action",
+    "actor_kind",
+    "actor_id",
+    "target_type",
+    "target_id",
+    "ip",
+    "metadata",
+)
+
+
+def csv_safe(value: str) -> str:
+    """Stop a spreadsheet from evaluating a cell as a formula when the export is opened."""
+    return f"'{value}" if value[:1] in ("=", "+", "-", "@", "\t", "\r", "\n") else value
+
+
+def _csv_line(cells: tuple[Any, ...]) -> str:
+    buffer = io.StringIO()
+    csv.writer(buffer).writerow(["" if c is None else csv_safe(str(c)) for c in cells])
+    return buffer.getvalue()
+
+
+def iter_csv(
+    session_factory: sessionmaker[Session], org_id: str, filters: EventFilter
+) -> Iterator[str]:
+    """Stream matching events as CSV, newest first, in batches of EXPORT_BATCH_SIZE.
+
+    Owns its session because a streaming body runs after the handler has returned, by which point
+    the request-scoped session may already be closed.
+    """
+    yield _csv_line(CSV_COLUMNS)
+    cursor = None
+    with session_factory() as db:
+        while True:
+            events, cursor = list_events(db, org_id, filters, cursor, EXPORT_BATCH_SIZE)
+            for event in events:
+                yield _csv_line(
+                    (
+                        event.created_at.isoformat(),
+                        event.id,
+                        event.action,
+                        event.actor_kind,
+                        event.actor_id,
+                        event.target_type,
+                        event.target_id,
+                        event.ip,
+                        json.dumps(event.details, sort_keys=True),
+                    )
+                )
+            db.rollback()  # do not sit in a transaction while the client drains the batch
+            if cursor is None:
+                return
