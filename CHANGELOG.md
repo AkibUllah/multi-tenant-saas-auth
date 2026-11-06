@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CodeQL code scanning workflow and Dependabot configuration (pip, Docker, GitHub Actions).
 - API reference and terminal screenshots in the README.
 - Roadmap tracked as GitHub issues under the `v0.2.0` milestone.
+- Audit log of security events: role changes, member removal and leaving, invitations, API key creation and revocation, account lockouts, organization deletion and exports. Events commit with the change they describe, are scoped to an organization, and never contain credentials.
+- `GET /v1/orgs/{org_id}/audit-events` (filters, cursor pagination) and `GET /v1/orgs/{org_id}/audit-events/export.csv`, gated by a new `audit:read` permission held by owners and admins and available as an API key scope.
+- `audit_events` is append-only: database triggers refuse updates and deletes on SQLite and PostgreSQL.
+- `TRUSTED_PROXY_HOPS` setting, so recorded client addresses cannot be chosen through `X-Forwarded-For`.
+- CI job running the test suite against PostgreSQL, with `TEST_DATABASE_URL` for doing the same locally.
+
+### Fixed
+
+- Revoking an invitation twice no longer overwrites its original `revoked_at`.
 
 ## [0.1.0] - 2026-10-25
 
