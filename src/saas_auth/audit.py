@@ -9,18 +9,23 @@ first place; the scrubber is the backstop for the day one of them does.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from .models import AuditEvent, Membership
 from .security import Principal
+from .utils import ensure_aware
 
 if TYPE_CHECKING:
     from .rbac import TenantContext
@@ -156,3 +161,68 @@ def record_for_user(
     """
     org_ids = db.scalars(select(Membership.org_id).where(Membership.user_id == user_id)).all()
     return [_add(db, org_id, actor, action, target, meta) for org_id in org_ids or [None]]
+
+
+# --------------------------------------------------------------------------- reading
+
+
+class InvalidCursor(ValueError):
+    """The pagination cursor was not one this service issued."""
+
+
+@dataclass(frozen=True)
+class EventFilter:
+    action: Action | None = None
+    actor_id: str | None = None
+    since: datetime | None = None  # inclusive
+    until: datetime | None = None  # exclusive
+
+
+def encode_cursor(event: AuditEvent) -> str:
+    raw = f"{event.created_at.isoformat()}|{event.id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def decode_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        created_at, event_id = base64.urlsafe_b64decode(cursor).decode().split("|")
+        return ensure_aware(datetime.fromisoformat(created_at)), str(uuid.UUID(event_id))
+    except (ValueError, OverflowError, binascii.Error) as exc:
+        raise InvalidCursor("Invalid cursor") from exc
+
+
+def list_events(
+    db: Session,
+    org_id: str,
+    filters: EventFilter,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> tuple[list[AuditEvent], str | None]:
+    """One page of an organization's events, newest first, plus the cursor for the next page.
+
+    Paging is keyset on (created_at, id), so it stays cheap on deep pages and does not shift when
+    new events arrive. The cursor only says where to resume: `org_id` is always applied, so a
+    cursor taken from another organization cannot widen what is returned.
+    """
+    query = select(AuditEvent).where(AuditEvent.org_id == org_id)
+    if filters.action is not None:
+        query = query.where(AuditEvent.action == filters.action.value)
+    if filters.actor_id is not None:
+        query = query.where(AuditEvent.actor_id == filters.actor_id)
+    if filters.since is not None:
+        query = query.where(AuditEvent.created_at >= filters.since)
+    if filters.until is not None:
+        query = query.where(AuditEvent.created_at < filters.until)
+    if cursor is not None:
+        created_at, event_id = decode_cursor(cursor)
+        query = query.where(
+            or_(
+                AuditEvent.created_at < created_at,
+                and_(AuditEvent.created_at == created_at, AuditEvent.id < event_id),
+            )
+        )
+    query = query.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(limit + 1)
+
+    rows = list(db.scalars(query))
+    page = rows[:limit]
+    return page, encode_cursor(page[-1]) if len(rows) > limit else None
