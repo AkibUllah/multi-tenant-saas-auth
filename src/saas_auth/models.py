@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base, UTCDateTime
@@ -145,3 +154,27 @@ class Project(Base):
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class AuditEvent(Base):
+    """One security-relevant action. Rows are written and never changed.
+
+    `org_id` and `actor_id` are deliberately not foreign keys: a cascade or SET NULL would rewrite
+    history, and the record of what happened in an organization has to outlive the organization.
+    `org_id` is NULL only for events about a user who belongs to no organization.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (Index("ix_audit_events_org_created", "org_id", "created_at", "id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    org_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)  # user | api_key | system
+    actor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # "metadata" is reserved on declarative classes, so only the column carries that name.
+    details: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
