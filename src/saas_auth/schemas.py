@@ -167,6 +167,27 @@ class ApiKeyCreated(ApiKeyOut):
     key: str  # full secret, returned exactly once
 
 
+# ----------------------------------------------------------------------------- audit
+
+
+class AuditEventOut(ORMModel):
+    id: str
+    org_id: str
+    actor_kind: str
+    actor_id: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    metadata: dict = Field(validation_alias="details")
+    ip: str | None
+    created_at: datetime
+
+
+class AuditEventPage(BaseModel):
+    items: list[AuditEventOut]
+    next_cursor: str | None
+
+
 # ----------------------------------------------------------------------------- projects
 
 

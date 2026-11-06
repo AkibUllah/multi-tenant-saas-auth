@@ -15,7 +15,7 @@ from .config import Settings, get_settings
 from .database import Base, make_engine, make_session_factory
 from .emailer import build_email_backend
 from .ratelimit import build_rate_limiter
-from .routers import api_keys, auth, health, invitations, members, orgs, projects
+from .routers import api_keys, audit, auth, health, invitations, members, orgs, projects
 
 log = logging.getLogger("saas_auth")
 
@@ -77,6 +77,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         members.router,
         invitations.router,
         api_keys.router,
+        audit.router,
         projects.router,
     ):
         app.include_router(router)

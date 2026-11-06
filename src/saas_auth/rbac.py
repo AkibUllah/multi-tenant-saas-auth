@@ -44,6 +44,7 @@ _MEMBER = _VIEWER | {
     "projects:update",
 }
 _ADMIN = _MEMBER | {
+    "audit:read",
     "org:update",
     "members:invite",
     "members:update",
