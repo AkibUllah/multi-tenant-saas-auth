@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from saas_auth import audit
+from saas_auth.main import create_app
 from saas_auth.models import AuditEvent, Membership
+from tests.conftest import Api, make_settings
 
 
 def stored_events(app, org_id: str | None = None, action: str | None = None) -> list[AuditEvent]:
@@ -263,3 +265,27 @@ def test_org_deletion_is_recorded_and_the_log_outlives_the_org(app, api, client,
     [event] = stored_events(app, org_id, "org.deleted")
     assert event.details == {"name": "Acme Ltd", "slug": "acme-ltd"}
     assert stored_events(app, org_id, "invitation.accepted")
+
+
+def test_client_cannot_choose_the_recorded_ip(app, api, client, settings):
+    api.register("spoof@example.com")
+    body = {"email": "spoof@example.com", "password": "wrong-password"}
+    for _ in range(settings.login_max_attempts):
+        client.post("/v1/auth/login", json=body, headers={"X-Forwarded-For": "6.6.6.6"})
+
+    [event] = stored_events(app, action="user.locked")
+    assert event.ip == "testclient"
+
+
+def test_ip_comes_from_the_trusted_proxy_entry_when_configured():
+    settings = make_settings(trusted_proxy_hops=1)
+    behind_proxy = create_app(settings)
+    with TestClient(behind_proxy) as client:
+        Api(client).register("proxied@example.com")
+        body = {"email": "proxied@example.com", "password": "wrong-password"}
+        headers = {"X-Forwarded-For": "6.6.6.6, 203.0.113.9"}
+        for _ in range(settings.login_max_attempts):
+            client.post("/v1/auth/login", json=body, headers=headers)
+
+    [event] = stored_events(behind_proxy, action="user.locked")
+    assert event.ip == "203.0.113.9"
